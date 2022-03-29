@@ -1,0 +1,21 @@
+	  "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+    
+    accountName, ok := os.LookupEnv("AZURE_STORAGE_ACCOUNT_NAME")
+		if !ok {
+			handle(errors.New("AZURE_STORAGE_ACCOUNT_NAME could not be found"))
+		}
+		accountKey, ok := os.LookupEnv("AZURE_STORAGE_ACCOUNT_KEY")
+		if !ok {
+			handle(errors.New("AZURE_STORAGE_ACCOUNT_KEY could not be found"))
+		}
+		cred, err := NewSharedKeyCredential(accountName, accountKey)
+		handle(err)
+	
+		service, err := NewServiceClientWithSharedKey(fmt.Sprintf("https://%s.blob.core.windows.net/", accountName), cred, nil)
+		handle(err)
+	
+		ctx := context.Background() // This example has no expiry.
+		container := service.NewContainerClient("mycontainer")
+		blockBlob := container.NewBlockBlobClient("HelloWorld.txt")
+		_, err = blockBlob.Upload(ctx, NopCloser(strings.NewReader(data)), nil)
+		handle(err)
