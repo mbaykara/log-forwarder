@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -21,15 +22,15 @@ func headers(w http.ResponseWriter, req *http.Request) {
 
 func jsonTOraw(log []byte){
 	res := gojsonq.New().JSONString(string(log)).Find("log")
-	fmt.Printf("rest %s",res)
 	data := []byte(fmt.Sprint(res))
 	var containername = "customcon3"
-	cred,accountName:= auth()
+	
+	// cred,accountName:= auth()
 
-	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
+	// URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
 	ctx := context.Background()
 
-
+    
 //disable if container exist////////////////////////////
 	// serviceClient, err := azblob.NewServiceClientWithSharedKey(URL, cred, nil)
 	// if err != nil {
@@ -42,21 +43,8 @@ func jsonTOraw(log []byte){
 	// if err != nil {	fmt.Print("Error Code: %s",err)	}
 ///////////////////////////////////////////////////////////		
 
-	fmt.Printf("\nUploading logs ...\n")
-	
-	blobName := "foo.txt"
-	blobClient, err := azblob.NewBlockBlobClientWithSharedKey(URL+containername+"/"+blobName, cred, nil)
-	if err != nil {
-		fmt.Print(err)
-	}
-   fmt.Printf("Seccess ...\n")
-	// Upload to data to blob storage
-	_, err = blobClient.UploadBufferToBlockBlob(ctx, data, azblob.HighLevelUploadToBlockBlobOption{})
-	if err != nil {
-		fmt.Print("Failure to upload to blob: %+v", err)
-	}
-	fmt.Printf("Appending %s",containername)
-	appendBlob(containername,blobName, data, ctx)
+	fmt.Printf("Appending %s\n in following container: ",containername)
+	appendBlob(containername, data, ctx)
 
 }
 
@@ -67,13 +55,16 @@ func main() {
 }
 
 
-func appendBlob(c ,b string, d []byte,ctx context.Context){
+func appendBlob(c string, d []byte,ctx context.Context){
 	cred, accountName := auth()
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName,c,b)
+	blobname := time.Now().Format("02Jan2006-150405")+".txt"
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName,c,blobname)
+	log.Print("blob url created")
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Print("appendBlobClient created")
 		_, err = appendBlobClient.Create(ctx, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -84,12 +75,14 @@ func appendBlob(c ,b string, d []byte,ctx context.Context){
 		if err != nil {
 			log.Fatal(err)
 		}
+	log.Print("AppendBlock processed")
+   fmt.Print("\nDONE!")
 }
 
 func auth()(c *azblob.SharedKeyCredential, s string) {
 	accountName, accountKey := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME"), os.Getenv("AZURE_STORAGE_ACCOUNT_KEY")
 	if len(accountName) == 0 || len(accountKey) == 0 {
-		fmt.Print("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCESS_KEY environment variable is not set")
+		fmt.Print("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set")
 	}
 	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
