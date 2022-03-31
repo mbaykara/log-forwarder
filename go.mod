@@ -6,7 +6,6 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v0.22.0
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v0.3.0
 	github.com/Azure/azure-storage-blob-go v0.14.0
-	github.com/thedevsaddam/gojsonq/v2 v2.5.2
 )
 
 require (
