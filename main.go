@@ -39,9 +39,10 @@ func isContinerExist(accountName, accountKey, containerName string) bool {
 		listContainer, _ := serviceURL.ListContainersSegment(context.TODO(), marker, containerService.ListContainersSegmentOptions{})
 		for _, val := range listContainer.ContainerItems {
 			if containerName == val.Name {
+				log.Printf("Container with name %s is already exist, skip container creation.\n", containerName)
 				return true
 			}
-			marker = listContainer.NextMarker // Next Page
+			marker = listContainer.NextMarker //Paging
 		}
 	}
 	return false
@@ -49,25 +50,22 @@ func isContinerExist(accountName, accountKey, containerName string) bool {
 }
 
 func headers(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err)
 	}
+
 	var c []CustomData
-	json.Unmarshal([]byte(body), &c)
+	json.Unmarshal([]byte(b), &c)
 	if err != nil {
 		log.Println(err)
 	}
-	fmt.Printf("Here is change the foo.log: %s\n", c[0].Log)
 	addContainer(c[0].Log)
 }
 
 func addContainer(log string) {
 	data := []byte(fmt.Sprint(log))
-	fmt.Printf("Send data %s: \n", data)
-	fmt.Printf("Send log %s: \n", data)
 	var containerName = strings.ToLower("container" + time.Now().Format("02Jan2006"))
-
 	cred, accountName, accountKey := auth()
 	ctx := context.Background()
 	if !isContinerExist(accountName, accountKey, containerName) {
@@ -76,12 +74,13 @@ func addContainer(log string) {
 		if err != nil {
 			fmt.Print("Invalid credentials with while creating a servceClient error: " + err.Error())
 		}
-		fmt.Printf("Creating a container named %s\n", containerName)
+
 		containerClient := serviceClient.NewContainerClient(containerName)
 		_, err = containerClient.Create(ctx, nil)
 		if err != nil {
 			fmt.Printf("Error Code: %s", err)
 		}
+		fmt.Printf("Container %s created.\n", containerName)
 	}
 	appendBlob(containerName, data)
 
@@ -95,7 +94,7 @@ func main() {
 
 func appendBlob(c string, d []byte) {
 	cred, accountName, accountKey := auth()
-	fmt.Printf("%s", accountKey)
+	UNUSED(accountKey)
 	blobname := time.Now().Format("02Jan2006-15") + ".txt"
 	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, c, blobname)
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
@@ -103,11 +102,11 @@ func appendBlob(c string, d []byte) {
 		log.Fatal(err)
 	}
 
-	log.Print("appendBlobClient created")
 	_, err = appendBlobClient.Create(context.TODO(), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Print("AppendBlobClient created.")
 	val := string(d)
 	_, err = appendBlobClient.AppendBlock(context.TODO(), streaming.NopCloser(strings.NewReader(val)), nil)
 	if err != nil {
@@ -127,3 +126,4 @@ func auth() (c *azblob.SharedKeyCredential, a, k string) {
 	}
 	return cred, accountName, accountKey
 }
+func UNUSED(x ...interface{}) {}
