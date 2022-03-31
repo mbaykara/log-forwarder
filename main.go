@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -14,12 +15,16 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	containerService "github.com/Azure/azure-storage-blob-go/azblob"
-	gojsonq "github.com/thedevsaddam/gojsonq/v2"
 )
 
-func headers(w http.ResponseWriter, req *http.Request) {
-		body, _ := ioutil.ReadAll(req.Body)
-		jsonTOraw(body)
+type CustomData struct {
+	Time int 			`json:"date"`
+	Stream  string 		`json:"stream"`
+	Logtag string   	`json:"logtag"`
+	App_time int 	    `json:"app_time"`
+	Loglevel  string    `json:"loglevel"`
+	Class string   		`json:"class"`
+	Log string   		`json:"log"`
 }
 func isContinerExist(accountName, accountKey, containerName string) bool {
 	cred,err := containerService.NewSharedKeyCredential(accountName, accountKey)
@@ -42,9 +47,24 @@ func isContinerExist(accountName, accountKey, containerName string) bool {
 
 }
 
-func jsonTOraw(log []byte){
-	res := gojsonq.New().JSONString(string(log)).Find("log")
-	data := []byte(fmt.Sprint(res))
+func headers(w http.ResponseWriter, r *http.Request) {
+		body, err:= io.ReadAll(r.Body)
+		if err != nil {
+    		log.Println(err)
+		}
+		var c []CustomData
+		json.Unmarshal([]byte(body), &c)
+		if err != nil {
+    		log.Println(err)
+		}
+		fmt.Printf("Here is change the foo.log: %s\n",c[0].Log)
+		addContainer(c[0].Log)
+}
+
+func addContainer(log string){
+	data := []byte(fmt.Sprint(log))
+	fmt.Printf("Send data %s: \n",data)
+	fmt.Printf("Send log %s: \n",data)
 	var containerName = strings.ToLower("container"+time.Now().Format("02Jan2006"))
 	
 	cred,accountName,accountKey:= auth()
@@ -55,15 +75,13 @@ func jsonTOraw(log []byte){
 		if err != nil {
 			fmt.Print("Invalid credentials with while creating a servceClient error: " + err.Error())
 		}
-
 		fmt.Printf("Creating a container named %s\n", containerName)
 		containerClient := serviceClient.NewContainerClient(containerName)
 		_, err = containerClient.Create(ctx, nil)
-		if err != nil {	fmt.Print("Error Code: %s",err)	}
+		if err != nil {	fmt.Printf("Error Code: %s",err)	}
 	}
-
-	fmt.Printf("Appending %s\n in following container: ",containerName)
 	appendBlob(containerName, data)
+	
 
 }
 
@@ -77,20 +95,21 @@ func main() {
 func appendBlob(c string, d []byte){
 	cred, accountName,accountKey := auth()
 	fmt.Print(accountKey)
-	blobname := time.Now().Format("02Jan2006-150405")+".txt"
+	blobname := time.Now().Format("02Jan2006-15")+".txt"
 	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName,c,blobname)
 	log.Print("blob url created")
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	
 	log.Print("appendBlobClient created")
 		_, err = appendBlobClient.Create(context.TODO(), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	val := string(d)
-	fmt.Println(val)
+	log.Printf("Appended data: %s%s",val,d)
 	_, err = appendBlobClient.AppendBlock(context.TODO(), streaming.NopCloser(strings.NewReader(fmt.Sprintf("%s\n", val ))), nil)
 		if err != nil {
 			log.Fatal(err)
