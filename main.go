@@ -63,8 +63,8 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	addContainer(c[0].Log)
 }
 
-func addContainer(log string) {
-	data := []byte(fmt.Sprint(log))
+func addContainer(s string) {
+	data := []byte(fmt.Sprint(s))
 	var containerName = strings.ToLower("container" + time.Now().Format("02Jan2006"))
 	cred, accountName, accountKey := auth()
 	ctx := context.Background()
