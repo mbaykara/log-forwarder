@@ -27,7 +27,8 @@ type CustomData struct {
 	Log      string `json:"log"`
 }
 
-func isContinerExist(accountName, accountKey, containerName string) bool {
+func checkContainer(accountName, accountKey, containerName string) bool {
+	log.Printf("checkContainer function\n")
 	cred, err := containerService.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
 		fmt.Print(err)
@@ -54,21 +55,22 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Println(err)
 	}
-
 	var c []CustomData
 	json.Unmarshal([]byte(b), &c)
 	if err != nil {
 		log.Println(err)
 	}
 	addContainer(c[0].Log)
+
 }
 
 func addContainer(s string) {
-	data := []byte(fmt.Sprint(s))
-	var containerName = strings.ToLower("container" + time.Now().Format("02Jan2006"))
 	cred, accountName, accountKey := auth()
+	data := []byte(fmt.Sprint(s))
+	var containerName = "fcclogs"
 	ctx := context.Background()
-	if !isContinerExist(accountName, accountKey, containerName) {
+	if !checkContainer(accountName, accountKey, containerName) {
+		log.Printf("Container %s creating...\n", containerName)
 		URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
 		serviceClient, err := azblob.NewServiceClientWithSharedKey(URL, cred, nil)
 		if err != nil {
@@ -80,8 +82,9 @@ func addContainer(s string) {
 		if err != nil {
 			fmt.Printf("Error Code: %s", err)
 		}
-		fmt.Printf("Container %s created.\n", containerName)
+		log.Printf("Container %s created.\n", containerName)
 	}
+	log.Printf("Container %s already exist.\n", containerName)
 	appendBlob(containerName, data)
 
 }
@@ -118,12 +121,13 @@ func appendBlob(c string, d []byte) {
 func auth() (c *azblob.SharedKeyCredential, a, k string) {
 	accountName, accountKey := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME"), os.Getenv("AZURE_STORAGE_ACCOUNT_KEY")
 	if len(accountName) == 0 || len(accountKey) == 0 {
-		fmt.Print("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set")
+		log.Printf("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set\n")
 	}
 	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Printf("Successfully authenticated.\n")
 	return cred, accountName, accountKey
 }
 func UNUSED(x ...interface{}) {}
