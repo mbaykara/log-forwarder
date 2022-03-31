@@ -28,7 +28,6 @@ type CustomData struct {
 }
 
 func checkContainer(accountName, accountKey, containerName string) bool {
-	log.Printf("checkContainer function\n")
 	cred, err := containerService.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
 		fmt.Print(err)
@@ -84,7 +83,6 @@ func addContainer(s string) {
 		}
 		log.Printf("Container %s created.\n", containerName)
 	}
-	log.Printf("Container %s already exist.\n", containerName)
 	appendBlob(containerName, data)
 
 }
