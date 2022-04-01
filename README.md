@@ -2,3 +2,5 @@
 
 This tool allows you to use as fluent-bit output plugin, it send logs to a centrol storage in raw format. Currently, it supports only Azure Blob Storage.
 
+## first gut issue
+1. Add new line for each appended data
