@@ -95,8 +95,13 @@ func main() {
 	http.ListenAndServe(":8090", nil)
 }
 
-func checkBlob(c, blobname string, ctx context.Context) bool {
-	containerClient, err := azblob.NewContainerClientFromConnectionString("DefaultEndpointsProtocol=https;AccountName=thanos1;AccountKey=Iy80SGQy2ACCng8TOlMRa27pHId3Fg15gDDkeYNKoaU5zX4AVBpeI291KPGCjzy8+LMKq+L9Ak0D+AStrLkOOQ==;EndpointSuffix=core.windows.net", c, nil)
+func checkBlob(c, accountName, blobname string, ctx context.Context) bool {
+	cred := os.Getenv("CONNECTION_STRING")
+	if len(cred) == 0 {
+		log.Printf(" CONNECTION_STRING environment variable is not set\n")
+		os.Exit(123)
+	}
+	containerClient, err := azblob.NewContainerClientFromConnectionString(cred, c, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -126,7 +131,7 @@ func appendBlob(c string, d []byte, ctx context.Context) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	b := checkBlob(c, blobname, ctx)
+	b := checkBlob(c, accountName, blobname, ctx)
 
 	if !b {
 		_, err = appendBlobClient.Create(ctx, nil)
@@ -137,7 +142,7 @@ func appendBlob(c string, d []byte, ctx context.Context) {
 	}
 
 	log.Print("AppendBlobClient created.")
-	val := string(d)
+	val := string(d) + "\n"
 	r, err := appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(val)), nil)
 	if err != nil {
 		log.Fatal(err)
@@ -150,6 +155,7 @@ func auth() (c *azblob.SharedKeyCredential, a, k string) {
 	accountName, accountKey := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME"), os.Getenv("AZURE_STORAGE_ACCOUNT_KEY")
 	if len(accountName) == 0 || len(accountKey) == 0 {
 		log.Printf("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set\n")
+		os.Exit(123)
 	}
 	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
