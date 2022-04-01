@@ -83,7 +83,7 @@ func addContainer(s string) {
 		}
 		log.Printf("Container %s created.\n", containerName)
 	}
-	appendBlob(containerName, data)
+	appendBlob(containerName, data, ctx)
 
 }
 
@@ -93,7 +93,7 @@ func main() {
 	http.ListenAndServe(":8090", nil)
 }
 
-func appendBlob(c string, d []byte) {
+func appendBlob(c string, d []byte, ctx context.Context) {
 	cred, accountName, accountKey := auth()
 	UNUSED(accountKey)
 	blobname := time.Now().Format("02Jan2006-15") + ".txt"
@@ -103,13 +103,13 @@ func appendBlob(c string, d []byte) {
 		log.Fatal(err)
 	}
 
-	_, err = appendBlobClient.Create(context.TODO(), nil)
+	_, err = appendBlobClient.Create(ctx, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Print("AppendBlobClient created.")
 	val := string(d)
-	_, err = appendBlobClient.AppendBlock(context.TODO(), streaming.NopCloser(strings.NewReader(val)), nil)
+	_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(val)), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
