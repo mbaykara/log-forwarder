@@ -27,6 +27,12 @@ type CustomData struct {
 	Log      string `json:"log"`
 }
 
+const (
+	BlockSize   = 4 * 1024 * 1024 // 4m
+	Parallelism = 4
+	Timeout     = 30
+)
+
 func checkContainer(accountName, accountKey, containerName string) bool {
 	cred, err := containerService.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
@@ -63,7 +69,7 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func addContainer(s string) {
+func addContainer(s string) azblob.ServiceClient {
 	cred, accountName, accountKey := auth()
 	data := []byte(fmt.Sprint(s))
 	var containerName = "fcclogs"
@@ -84,6 +90,7 @@ func addContainer(s string) {
 		log.Printf("Container %s created.\n", containerName)
 	}
 	appendBlob(containerName, data, ctx)
+	return azblob.ServiceClient{}
 
 }
 
@@ -93,27 +100,63 @@ func main() {
 	http.ListenAndServe(":8090", nil)
 }
 
+type Position struct {
+	position *int64
+}
+
+func increment(i int) int {
+	return i + 1
+}
+
+func checkBlob(c, blobname string, ctx context.Context) bool {
+	containerClient, err := azblob.NewContainerClientFromConnectionString("DefaultEndpointsProtocol=https;AccountName=thanos1;AccountKey=Iy80SGQy2ACCng8TOlMRa27pHId3Fg15gDDkeYNKoaU5zX4AVBpeI291KPGCjzy8+LMKq+L9Ak0D+AStrLkOOQ==;EndpointSuffix=core.windows.net", c, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pager := containerClient.ListBlobsFlat(nil)
+
+	for pager.NextPage(ctx) {
+		resp := pager.PageResponse()
+
+		for _, v := range resp.ContainerListBlobFlatSegmentResult.Segment.BlobItems {
+			if *v.Name == blobname {
+				return true
+			}
+		}
+	}
+
+	if err = pager.Err(); err != nil {
+		log.Fatalf("Failure to list blobs: %+v", err)
+	}
+	return false
+}
 func appendBlob(c string, d []byte, ctx context.Context) {
 	cred, accountName, accountKey := auth()
 	UNUSED(accountKey)
-	blobname := time.Now().Format("02Jan2006-15") + ".txt"
+	blobname := time.Now().Format("02Jan2006") + ".txt"
 	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, c, blobname)
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
+	b := checkBlob(c, blobname, ctx)
 
-	_, err = appendBlobClient.Create(ctx, nil)
-	if err != nil {
-		log.Fatal(err)
+	if !b {
+		_, err = appendBlobClient.Create(ctx, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Blob %s created.", blobname)
 	}
+
 	log.Print("AppendBlobClient created.")
 	val := string(d)
-	_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(val)), nil)
+	r, err := appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(val)), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Print("Block appended successfully.")
+	UNUSED(r)
 }
 
 func auth() (c *azblob.SharedKeyCredential, a, k string) {
