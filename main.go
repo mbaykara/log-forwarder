@@ -27,12 +27,6 @@ type CustomData struct {
 	Log      string `json:"log"`
 }
 
-const (
-	BlockSize   = 4 * 1024 * 1024 // 4m
-	Parallelism = 4
-	Timeout     = 30
-)
-
 func checkContainer(accountName, accountKey, containerName string) bool {
 	cred, err := containerService.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
@@ -97,15 +91,8 @@ func addContainer(s string) azblob.ServiceClient {
 func main() {
 
 	http.HandleFunc("/log", headers)
+	fmt.Println("Waiting for logs...")
 	http.ListenAndServe(":8090", nil)
-}
-
-type Position struct {
-	position *int64
-}
-
-func increment(i int) int {
-	return i + 1
 }
 
 func checkBlob(c, blobname string, ctx context.Context) bool {
