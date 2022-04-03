@@ -83,7 +83,7 @@ func addContainer(s string) azblob.ServiceClient {
 		}
 		log.Printf("Container %s created.\n", containerName)
 	}
-	appendBlob(containerName, data, ctx)
+	appendBlob(cred, accountName, containerName, data, ctx)
 	return azblob.ServiceClient{}
 
 }
@@ -95,17 +95,13 @@ func main() {
 	http.ListenAndServe(":8090", nil)
 }
 
-func checkBlob(c, accountName, blobname string, ctx context.Context) bool {
-	cred := os.Getenv("CONNECTION_STRING")
-	if len(cred) == 0 {
-		log.Printf(" CONNECTION_STRING environment variable is not set\n")
-		os.Exit(123)
-	}
-	containerClient, err := azblob.NewContainerClientFromConnectionString(cred, c, nil)
+func checkBlob(cred *azblob.SharedKeyCredential, container, accountName, blobname string, ctx context.Context) bool {
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s", accountName, container)
+	cclient, err := azblob.NewContainerClientWithSharedKey(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	pager := containerClient.ListBlobsFlat(nil)
+	pager := cclient.ListBlobsFlat(nil)
 
 	for pager.NextPage(ctx) {
 		resp := pager.PageResponse()
@@ -116,22 +112,19 @@ func checkBlob(c, accountName, blobname string, ctx context.Context) bool {
 			}
 		}
 	}
-
 	if err = pager.Err(); err != nil {
 		log.Fatalf("Failure to list blobs: %+v", err)
 	}
 	return false
 }
-func appendBlob(c string, d []byte, ctx context.Context) {
-	cred, accountName, accountKey := auth()
-	UNUSED(accountKey)
+func appendBlob(cred *azblob.SharedKeyCredential, accountName, c string, d []byte, ctx context.Context) {
 	blobname := time.Now().Format("02Jan2006") + ".txt"
 	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, c, blobname)
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	b := checkBlob(c, accountName, blobname, ctx)
+	b := checkBlob(cred, c, accountName, blobname, ctx)
 
 	if !b {
 		_, err = appendBlobClient.Create(ctx, nil)
@@ -140,8 +133,6 @@ func appendBlob(c string, d []byte, ctx context.Context) {
 		}
 		log.Printf("Blob %s created.", blobname)
 	}
-
-	log.Print("AppendBlobClient created.")
 	val := string(d) + "\n"
 	r, err := appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(val)), nil)
 	if err != nil {
@@ -157,6 +148,7 @@ func auth() (c *azblob.SharedKeyCredential, a, k string) {
 		log.Printf("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set\n")
 		os.Exit(123)
 	}
+
 	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
 	if err != nil {
 		log.Fatal(err)
