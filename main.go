@@ -18,13 +18,24 @@ import (
 )
 
 type CustomData struct {
-	Time     int    `json:"date"`
-	Stream   string `json:"stream"`
-	Logtag   string `json:"logtag"`
-	App_time int    `json:"app_time"`
-	Loglevel string `json:"loglevel"`
-	Class    string `json:"class"`
-	Log      string `json:"log"`
+	Time       int    `json:"date"`
+	Stream     string `json:"stream"`
+	Logtag     string `json:"logtag"`
+	App_time   int    `json:"app_time"`
+	Loglevel   string `json:"loglevel"`
+	Class      string `json:"class"`
+	Log        string `json:"log"`
+	Kubernetes Kubernetes
+}
+type Kubernetes struct {
+	Pod       string `json:"pod_name"`
+	Namespace string `json:"namespace_name"`
+	App       string `json:"app"`
+	Labels    Labels
+}
+type Labels struct {
+	App  string `json:"app"`
+	Type string `json:"type"`
 }
 
 func checkContainer(accountName, accountKey, containerName string) bool {
@@ -59,11 +70,11 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Println(err)
 	}
-	addContainer(c[0].Log)
+	addContainer(c[0].Log, c[0].Kubernetes.Labels.Type)
 
 }
 
-func addContainer(s string) azblob.ServiceClient {
+func addContainer(s, label string) azblob.ServiceClient {
 	cred, accountName, accountKey := auth()
 	data := []byte(fmt.Sprint(s))
 	var containerName = "fcclogs"
@@ -83,7 +94,8 @@ func addContainer(s string) azblob.ServiceClient {
 		}
 		log.Printf("Container %s created.\n", containerName)
 	}
-	appendBlob(cred, accountName, containerName, data, ctx)
+	l := label
+	appendBlob(cred, accountName, containerName, l, data, ctx)
 	return azblob.ServiceClient{}
 
 }
@@ -117,8 +129,8 @@ func checkBlob(cred *azblob.SharedKeyCredential, container, accountName, blobnam
 	}
 	return false
 }
-func appendBlob(cred *azblob.SharedKeyCredential, accountName, c string, d []byte, ctx context.Context) {
-	blobname := time.Now().Format("02Jan2006") + ".txt"
+func appendBlob(cred *azblob.SharedKeyCredential, accountName, c, label string, d []byte, ctx context.Context) {
+	blobname := time.Now().Format("02Jan2006") + label + ".txt"
 	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, c, blobname)
 	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
 	if err != nil {
@@ -138,7 +150,7 @@ func appendBlob(cred *azblob.SharedKeyCredential, accountName, c string, d []byt
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Print("Block appended successfully.")
+	log.Printf("Block appended to %s successfully.", blobname)
 	UNUSED(r)
 }
 
