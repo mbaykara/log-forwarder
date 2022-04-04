@@ -103,7 +103,7 @@ func addContainer(s, label string) azblob.ServiceClient {
 func main() {
 
 	http.HandleFunc("/log", headers)
-	fmt.Println("Waiting for logs...")
+	log.Printf("Waiting for logs ...")
 	http.ListenAndServe(":8090", nil)
 }
 
