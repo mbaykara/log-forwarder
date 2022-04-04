@@ -4,5 +4,7 @@ This tool allows you to use as fluent-bit output plugin, it send logs to a centr
 
 ## Supported storage types
 ✅ Azure Blob Storage
+
 ⬜ MinIO
+
 ⬜ Amazon S3
