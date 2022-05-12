@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,9 +80,21 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 }
 
+//this randomString func from azure sample
+func randomString() string {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return strconv.Itoa(r.Int())
+}
+
 func addContainer(data, deployment, k8sContainerName string) azblob.ServiceClient {
 	ctx, cred := authServicePrincipal()
 	bl_con := strings.ToLower(os.Getenv("CLUSTER_NAME"))
+	if len(bl_con) > 0 {
+		log.Printf("Cluster name found %s:", bl_con)
+	} else {
+		bl_con = randomString()
+		log.Printf("Cluster name not found, take a random name %s", bl_con)
+	}
 	log.Printf("Validating existence of the container: %s", bl_con)
 	accountName := os.Getenv("STORAGE_ACCOUNT_NAME")
 	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
