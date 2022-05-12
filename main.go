@@ -5,17 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
-	containerService "github.com/Azure/azure-storage-blob-go/azblob"
+	"github.com/kelseyhightower/envconfig"
+	log "github.com/sirupsen/logrus"
 )
+
+type Credentials struct {
+	Client  string `envconfig:"AZURE_CLIENT_ID"`
+	Secret  string `envconfig:"AZURE_CLIENT_SECRET"`
+	Tenant  string `envconfig:"AZURE_TENANT_ID"`
+	Subs    string `envconfig:"SUBSCRIPTION_ID"`
+	Cluster string `envconfig:"CLUSTER_NAME"`
+}
 
 type CustomData struct {
 	Stream     string `json:"stream"`
@@ -70,67 +78,43 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func addContainer(data, deployment, k8scontainer string) azblob.ServiceClient {
-	cred, accountName, accountKey := auth()
-	ctx := context.Background()
-	if !isContainerExist(accountName, accountKey, deployment, ctx) {
-		log.Printf("Container %s creating...\n", deployment)
-		URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
-		serviceClient, err := azblob.NewServiceClientWithSharedKey(URL, cred, nil)
-		if err != nil {
-			log.Printf("Invalid credentials with while creating a servceClient error: %s" + err.Error())
-		}
-
-		containerClient := serviceClient.NewContainerClient(deployment)
-		_, err = containerClient.Create(ctx, nil)
-		if err != nil {
-			fmt.Printf("Error Code: %s", err)
-		}
-		log.Printf("Container %s created.\n", deployment)
+func addContainer(data, deployment, k8sContainerName string) azblob.ServiceClient {
+	ctx, cred := authServicePrincipal()
+	bl_con := strings.ToLower(os.Getenv("CLUSTER_NAME"))
+	log.Printf("Validating existence of the container: %s", bl_con)
+	accountName := os.Getenv("STORAGE_ACCOUNT_NAME")
+	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
+	serviceClient, err := azblob.NewServiceClient(URL, cred, nil)
+	if err != nil {
+		log.Printf("Invalid credentials with while creating a servceClient error: %s" + err.Error())
 	}
-	appendBlob(cred, accountName, deployment, k8scontainer, data, ctx)
+	log.Printf("Creating the container: %s", bl_con)
+	containerClient, _ := serviceClient.NewContainerClient(bl_con)
+	_, err = containerClient.Create(ctx, nil)
+	if err != nil {
+		log.Printf("Attempt to create container %s, but it exist.", bl_con)
+	}
+
+	appendBlob(cred, accountName, bl_con, deployment, k8sContainerName, data, ctx)
 	return azblob.ServiceClient{}
 
 }
 
-func isContainerExist(accountName, accountKey, blobcontainer string, ctx context.Context) bool {
-	cred, err := containerService.NewSharedKeyCredential(accountName, accountKey)
-	if err != nil {
-		fmt.Print(err)
-	}
-	p := containerService.NewPipeline(cred, containerService.PipelineOptions{})
-	u, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net", accountName))
-	serviceURL := containerService.NewServiceURL(*u, p)
-	for marker := (containerService.Marker{}); marker.NotDone(); {
-		listContainer, _ := serviceURL.ListContainersSegment(ctx, marker, containerService.ListContainersSegmentOptions{})
-		for _, val := range listContainer.ContainerItems {
-			if blobcontainer == val.Name {
-				log.Printf("Container with name %s is already exist, skip container creation.\n", blobcontainer)
-				return true
-			}
-			marker = listContainer.NextMarker //Paging
-		}
-		log.Printf("%s not exist", blobcontainer)
-	}
-	return false
-
-}
-
-func appendBlob(cred *azblob.SharedKeyCredential, accountName, deployment, k8scontainer, data string, ctx context.Context) {
-	blobname := time.Now().Format("20060102") + "-" + k8scontainer + ".log"
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, deployment, blobname)
-	appendBlobClient, err := azblob.NewAppendBlobClientWithSharedKey(u, cred, nil)
+func appendBlob(cred *azidentity.DefaultAzureCredential, accountName, bl_con, deployment, k8sContainerName, data string, ctx context.Context) {
+	blobname := deployment + "/" + time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
+	blobnamefinal := time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, bl_con, blobname)
+	appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	b := isBlobExist(cred, deployment, accountName, blobname, ctx)
+	b := isBlobExist(cred, bl_con, accountName, blobnamefinal, ctx)
 	if !b {
 		_, err = appendBlobClient.Create(ctx, nil)
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("Blob %s created.", blobname)
+		log.Printf("Blob %s already exist", blobname)
 	}
 	data = data + "\n"
 	r, err := appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
@@ -141,21 +125,21 @@ func appendBlob(cred *azblob.SharedKeyCredential, accountName, deployment, k8sco
 	UNUSED(r)
 }
 
-func isBlobExist(cred *azblob.SharedKeyCredential, container, accountName, blobname string, ctx context.Context) bool {
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s", accountName, container)
-	cclient, err := azblob.NewContainerClientWithSharedKey(u, cred, nil)
+func isBlobExist(cred *azidentity.DefaultAzureCredential, bl_con, accountName, blobname string, ctx context.Context) bool {
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s", accountName, bl_con)
+	cclient, err := azblob.NewContainerClient(u, cred, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Errorf("Failed to create container client %s", err)
 	}
-
 	pager := cclient.ListBlobsFlat(nil)
 	for pager.NextPage(ctx) {
 		resp := pager.PageResponse()
-		for _, v := range resp.ContainerListBlobFlatSegmentResult.Segment.BlobItems {
+		for _, v := range resp.ListBlobsFlatSegmentResponse.Segment.BlobItems {
 			if *v.Name == blobname {
 				return true
 			}
 		}
+
 	}
 	if err = pager.Err(); err != nil {
 		log.Fatalf("Failure to list blobs: %+v", err)
@@ -163,16 +147,24 @@ func isBlobExist(cred *azblob.SharedKeyCredential, container, accountName, blobn
 	return false
 }
 
-func auth() (c *azblob.SharedKeyCredential, a, k string) {
-	accountName, accountKey := os.Getenv("AZURE_STORAGE_ACCOUNT_NAME"), os.Getenv("AZURE_STORAGE_ACCOUNT_KEY")
-	if len(accountName) == 0 || len(accountKey) == 0 {
-		log.Printf("Either the AZURE_STORAGE_ACCOUNT_NAME or AZURE_STORAGE_ACCOUNT_KEY environment variable is not set\n")
-		os.Exit(123)
+func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential) {
+	if !authEnvVars() {
+		log.Fatalln("Error: Authentication environment variables not found")
 	}
-	cred, err := azblob.NewSharedKeyCredential(accountName, accountKey)
+	ctx := context.Background()
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Authentication Failed %s ", err)
 	}
-	return cred, accountName, accountKey
+	return ctx, cred
+}
+
+func authEnvVars() bool {
+	var c Credentials
+	err := envconfig.Process("Client", &c)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+	return true
 }
 func UNUSED(x ...interface{}) {}
