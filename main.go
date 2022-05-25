@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,26 +25,26 @@ type Credentials struct {
 	Cluster string `envconfig:"CLUSTER_NAME"`
 }
 
-type CustomData struct {
+type LogData struct {
 	Stream     string `json:"stream"`
 	Logtag     string `json:"logtag"`
-	App_time   string `json:"app_time"`
-	Loglevel   string `json:"loglevel"`
-	Class      string `json:"class"`
-	Log        string `json:"log"`
+	Message    string `json:"message"`
 	Kubernetes Kubernetes
 }
 type Kubernetes struct {
 	Pod         string `json:"pod_name"`
 	Namespace   string `json:"namespace_name"`
-	App         string `json:"app"`
 	Container   string `json:"container_name"`
+	Host        string `json:"host"`
+	Image       string `json:"container_image"`
 	Labels      Labels
 	Annotations Annotations
 }
 type Labels struct {
-	App  string `json:"app"`
-	Type string `json:"type"`
+	App      string `json:"app"`
+	K8s_App  string `json:"k8s_app"`
+	Type     string `json:"type"`
+	Instance string `json:"app.kubernetes.io/instance"`
 }
 
 type Annotations struct {
@@ -61,104 +59,102 @@ func main() {
 }
 
 func headers(w http.ResponseWriter, r *http.Request) {
+	var (
+		c          []LogData
+		data       string
+		deployment string
+	)
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err)
 	}
-	var c []CustomData
+
 	json.Unmarshal([]byte(b), &c)
 	if err != nil {
-		log.Println(err)
+		log.Printf("Unmarshal error %s\n", err)
 	}
-	var data = ""
-	if len(c[0].Kubernetes.Annotations.Parser) > 0 {
-		data = c[0].App_time + " " + c[0].Loglevel + " " + c[0].Class + " - " + c[0].Log
-	} else {
-		data = c[0].Log
+
+	data = c[0].Message
+	if os.Getenv("LOG_LEVEL") == "DEBUG" {
+		log.Printf("Data to send blob storge : %s\n", data)
+		log.Printf("Pod name : %s\n", c[0].Kubernetes.Pod)
+
+		log.Printf("Deployment namespace : %s\n", c[0].Kubernetes.Namespace)
+		log.Printf("Deployment Label : %s\n", c[0].Kubernetes.Labels.App)
+		log.Printf("Deployment K8s App : %s\n", c[0].Kubernetes.Labels.K8s_App)
+		log.Printf("Container name : %s\n", c[0].Kubernetes.Container)
+		log.Printf("Container image : %s\n", c[0].Kubernetes.Image)
 	}
-	addContainer(data, c[0].Kubernetes.Labels.App, c[0].Kubernetes.Container)
+	switch {
+	case len(c[0].Kubernetes.Labels.App) > 0:
+		deployment = c[0].Kubernetes.Labels.App
+		addContainer(data, deployment, c[0].Kubernetes.Container)
+	case len(c[0].Kubernetes.Labels.K8s_App) > 0:
+		deployment = c[0].Kubernetes.Labels.K8s_App
+		addContainer(data, deployment, c[0].Kubernetes.Container)
+	default:
+		deployment = removeHash(c[0].Kubernetes.Pod)
+		if len(deployment) == 0 {
+			deployment = c[0].Kubernetes.Container
+		}
+		addContainer(data, deployment, c[0].Kubernetes.Container)
+	}
 
 }
 
-//this randomString func from azure sample
-func randomString() string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return strconv.Itoa(r.Int())
+func removeHash(s string) string {
+	var podName string
+	for i := 0; i < len(s)-17; i++ {
+		podName += s[i : i+1]
+	}
+	return podName
 }
-
 func addContainer(data, deployment, k8sContainerName string) azblob.ServiceClient {
 	ctx, cred := authServicePrincipal()
-	bl_con := strings.ToLower(os.Getenv("CLUSTER_NAME"))
-	if len(bl_con) > 0 {
-		log.Printf("Cluster name found %s:", bl_con)
-	} else {
-		bl_con = randomString()
-		log.Printf("Cluster name not found, take a random name %s", bl_con)
-	}
-	log.Printf("Validating existence of the container: %s", bl_con)
+	blobContainer := strings.ToLower(os.Getenv("CLUSTER_NAME"))
+	log.Printf("Validating existence of the container: %s\n", blobContainer)
 	accountName := os.Getenv("STORAGE_ACCOUNT_NAME")
 	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
 	serviceClient, err := azblob.NewServiceClient(URL, cred, nil)
 	if err != nil {
-		log.Printf("Invalid credentials with while creating a servceClient error: %s" + err.Error())
+		log.Printf("Invalid credentials with while creating a serviceClient error: %s\n" + err.Error())
 	}
-	log.Printf("Creating the container: %s", bl_con)
-	containerClient, _ := serviceClient.NewContainerClient(bl_con)
+	log.Printf("Creating the container: %s\n", blobContainer)
+	containerClient, _ := serviceClient.NewContainerClient(blobContainer)
 	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
-		log.Printf("Attempt to create container %s, but it exist.", bl_con)
+		log.Printf("Attempt to create container %s, but it exist.\n", blobContainer)
 	}
 
-	appendBlob(cred, accountName, bl_con, deployment, k8sContainerName, data, ctx)
+	appendBlob(cred, accountName, blobContainer, deployment, k8sContainerName, data, ctx)
 	return azblob.ServiceClient{}
 
 }
 
-func appendBlob(cred *azidentity.DefaultAzureCredential, accountName, bl_con, deployment, k8sContainerName, data string, ctx context.Context) {
-	blobname := deployment + "/" + time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
-	blobnamefinal := time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, bl_con, blobname)
+func appendBlob(cred *azidentity.DefaultAzureCredential, accountName, blobContainer, deployment, k8sContainerName, data string, ctx context.Context) {
+	blobWithDir := deployment + "/" + time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
+	data = data + "\n"
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
 	appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to create appendBlobClient %s\n", err)
 	}
-	b := isBlobExist(cred, bl_con, accountName, blobnamefinal, ctx)
-	if !b {
+
+	_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+	if err != nil {
+		log.Printf("Failed to append existing one %s", err)
 		_, err = appendBlobClient.Create(ctx, nil)
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("Failed to create new blob %s\n", err)
 		}
-		log.Printf("Blob %s already exist", blobname)
-	}
-	data = data + "\n"
-	r, err := appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("Block appended to %s successfully.", blobname)
-	UNUSED(r)
-}
-
-func isBlobExist(cred *azidentity.DefaultAzureCredential, bl_con, accountName, blobname string, ctx context.Context) bool {
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s", accountName, bl_con)
-	cclient, err := azblob.NewContainerClient(u, cred, nil)
-	if err != nil {
-		log.Errorf("Failed to create container client %s", err)
-	}
-	pager := cclient.ListBlobsFlat(nil)
-	for pager.NextPage(ctx) {
-		resp := pager.PageResponse()
-		for _, v := range resp.ListBlobsFlatSegmentResponse.Segment.BlobItems {
-			if *v.Name == blobname {
-				return true
-			}
+		_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+		if err != nil {
+			log.Fatalf("Failed to create a new Blob %s", err)
 		}
+	}
 
-	}
-	if err = pager.Err(); err != nil {
-		log.Fatalf("Failure to list blobs: %+v", err)
-	}
-	return false
+	log.Printf("Block appended to %s successfully.\n", blobWithDir)
+
 }
 
 func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential) {
@@ -168,7 +164,7 @@ func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential
 	ctx := context.Background()
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		log.Fatalf("Authentication Failed %s ", err)
+		log.Fatalf("Authentication Failed %s\n", err)
 	}
 	return ctx, cred
 }
