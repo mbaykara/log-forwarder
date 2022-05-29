@@ -76,14 +76,7 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 	data = c[0].Message
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
-		log.Printf("Data to send blob storge : %s\n", data)
-		log.Printf("Pod name : %s\n", c[0].Kubernetes.Pod)
-
-		log.Printf("Deployment namespace : %s\n", c[0].Kubernetes.Namespace)
-		log.Printf("Deployment Label : %s\n", c[0].Kubernetes.Labels.App)
-		log.Printf("Deployment K8s App : %s\n", c[0].Kubernetes.Labels.K8s_App)
-		log.Printf("Container name : %s\n", c[0].Kubernetes.Container)
-		log.Printf("Container image : %s\n", c[0].Kubernetes.Image)
+		printForDebug(c)
 	}
 	switch {
 	case len(c[0].Kubernetes.Labels.App) > 0:
@@ -99,6 +92,15 @@ func headers(w http.ResponseWriter, r *http.Request) {
 		}
 		addContainer(data, deployment, c[0].Kubernetes.Container)
 	}
+
+}
+func printForDebug(c []LogData) {
+	log.Printf("Pod name : %s\n", c[0].Kubernetes.Pod)
+	log.Printf("Deployment namespace : %s\n", c[0].Kubernetes.Namespace)
+	log.Printf("Deployment Label : %s\n", c[0].Kubernetes.Labels.App)
+	log.Printf("Deployment K8s App : %s\n", c[0].Kubernetes.Labels.K8s_App)
+	log.Printf("Container name : %s\n", c[0].Kubernetes.Container)
+	log.Printf("Container image : %s\n", c[0].Kubernetes.Image)
 
 }
 
