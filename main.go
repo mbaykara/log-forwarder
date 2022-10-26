@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/kelseyhightower/envconfig"
@@ -18,17 +20,19 @@ import (
 )
 
 type Credentials struct {
-	Client  string `envconfig:"AZURE_CLIENT_ID"`
-	Secret  string `envconfig:"AZURE_CLIENT_SECRET"`
-	Tenant  string `envconfig:"AZURE_TENANT_ID"`
-	Subs    string `envconfig:"SUBSCRIPTION_ID"`
-	Cluster string `envconfig:"CLUSTER_NAME"`
+	Client  string `envconfig:"AZURE_CLIENT_ID" required:"true"`
+	Secret  string `envconfig:"AZURE_CLIENT_SECRET" required:"true"`
+	Tenant  string `envconfig:"AZURE_TENANT_ID" required:"true"`
+	Subs    string `envconfig:"SUBSCRIPTION_ID" required:"true"`
+	Cluster string `envconfig:"CLUSTER_NAME" required:"true"`
+	Path    string `envconfig:"LOG_PATH" required:"true"`
 }
 
 type LogData struct {
 	Stream     string `json:"stream"`
 	Logtag     string `json:"logtag"`
 	Message    string `json:"message"`
+	Date       int    `json:"date"`
 	Kubernetes Kubernetes
 }
 type Kubernetes struct {
@@ -53,110 +57,151 @@ type Annotations struct {
 
 func main() {
 
+	interval, err := strconv.Atoi(os.Getenv("INTERVAL"))
+	if err != nil {
+		panic(err)
+	}
+	if !(len(os.Getenv("INTERVAL")) > 0) {
+		interval = 900
+	}
+	t := time.Duration(interval)
 	http.HandleFunc("/log", headers)
-	log.Printf("Waiting for logs ...")
+	ticker := time.NewTicker(t * time.Second)
+	go schedule(ticker)
 	http.ListenAndServe(":8090", nil)
 }
 
+func schedule(ticker *time.Ticker) {
+	for {
+		<-ticker.C
+		uploadBlocks()
+	}
+}
+
+func removeHash(s string) string {
+	r := regexp.MustCompile(`-?([a-z1-9]{8,})?-[a-z1-9]{5}$`)
+	return r.ReplaceAllString(s, "")
+}
+
+func prepareBlobName(s string) string {
+	r := regexp.MustCompile(`-?([a-z1-9]{8,})?-[a-z1-9]{5}.log$`)
+	tmp := r.ReplaceAllString(s, "")
+	r2 := regexp.MustCompile(`^(\d){8}-`)
+	return r2.ReplaceAllString(tmp, "")
+}
+
 func headers(w http.ResponseWriter, r *http.Request) {
+
 	var (
 		c          []LogData
-		data       string
 		deployment string
 	)
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err)
 	}
-
-	json.Unmarshal([]byte(b), &c)
-	if err != nil {
-		log.Printf("Unmarshal error %s\n", err)
-	}
-
-	data = c[0].Message
 	if os.Getenv("LOG_LEVEL") == "DEBUG" {
-		printForDebug(c)
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
 	}
-	switch {
-	case len(c[0].Kubernetes.Labels.App) > 0:
-		deployment = c[0].Kubernetes.Labels.App
-		addContainer(data, deployment, c[0].Kubernetes.Container)
-	case len(c[0].Kubernetes.Labels.K8s_App) > 0:
-		deployment = c[0].Kubernetes.Labels.K8s_App
-		addContainer(data, deployment, c[0].Kubernetes.Container)
-	default:
-		deployment = removeHash(c[0].Kubernetes.Pod)
-		if len(deployment) == 0 {
-			deployment = c[0].Kubernetes.Container
+
+	a := string(b)
+	json.Unmarshal([]byte(a), &c)
+	for i := range c {
+		deployment = removeHash(c[i].Kubernetes.Pod)
+		log.Debugf("Deployment name: %s", deployment)
+		log.Debugf("Pod name       : %s", c[i].Kubernetes.Pod)
+		log.Debugf("Container name : %s", c[i].Kubernetes.Container)
+		log.Debugf("The log message: %s", c[i].Message)
+		if strings.Contains(deployment, "backup") || strings.Contains(deployment, "setup") {
+			break
 		}
-		addContainer(data, deployment, c[0].Kubernetes.Container)
+		if len(deployment) < 1 {
+			break
+		}
+
+		writeBlob(c[i].Message, deployment, c[i].Kubernetes.Pod)
 	}
 
 }
-func printForDebug(c []LogData) {
-	log.Printf("Pod name : %s\n", c[0].Kubernetes.Pod)
-	log.Printf("Deployment namespace : %s\n", c[0].Kubernetes.Namespace)
-	log.Printf("Deployment Label : %s\n", c[0].Kubernetes.Labels.App)
-	log.Printf("Deployment K8s App : %s\n", c[0].Kubernetes.Labels.K8s_App)
-	log.Printf("Container name : %s\n", c[0].Kubernetes.Container)
-	log.Printf("Container image : %s\n", c[0].Kubernetes.Image)
 
-}
-
-func removeHash(s string) string {
-	var podName string
-	for i := 0; i < len(s)-17; i++ {
-		podName += s[i : i+1]
+func writeBlob(data, deployment, podName string) (string, string, string) {
+	data = data + "\n"
+	var dir string
+	path := os.Getenv("LOG_PATH")
+	err := os.MkdirAll(path, os.ModePerm)
+	if err != nil {
+		log.Println(err)
 	}
-	return podName
+	err = os.Chdir(path)
+	if err != nil {
+		log.Warningf("Could not change to the deployment path %s", err)
+	}
+
+	dir = time.Now().Format("20060102") + "-" + podName + ".log"
+
+	f, err := os.OpenFile(dir, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Cannot open the file %s", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(data + "\n"); err != nil {
+		log.Fatalf("Cannot write to the file %s", err)
+	}
+	log.Printf(" Collecting logs...It will be uploaded by %s secons interval", os.Getenv("INTERVAL"))
+
+	return deployment, podName, dir
 }
-func addContainer(data, deployment, k8sContainerName string) azblob.ServiceClient {
+
+func addContainer() (context.Context, *azidentity.DefaultAzureCredential, string, string) {
 	ctx, cred := authServicePrincipal()
 	blobContainer := strings.ToLower(os.Getenv("CLUSTER_NAME"))
-	log.Printf("Validating existence of the container: %s\n", blobContainer)
 	accountName := os.Getenv("STORAGE_ACCOUNT_NAME")
 	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
 	serviceClient, err := azblob.NewServiceClient(URL, cred, nil)
 	if err != nil {
-		log.Printf("Invalid credentials with while creating a serviceClient error: %s\n" + err.Error())
+		log.Printf("Invalid credentials with while creating a serviceClient error: %s" + err.Error())
 	}
-	log.Printf("Creating the container: %s\n", blobContainer)
+	log.Printf("Creating the container: %s", blobContainer)
 	containerClient, _ := serviceClient.NewContainerClient(blobContainer)
 	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
-		log.Printf("Attempt to create container %s, but it exist.\n", blobContainer)
+		log.Printf("Attempt to create container %s, but it exist. Skipping...", blobContainer)
 	}
-
-	appendBlob(cred, accountName, blobContainer, deployment, k8sContainerName, data, ctx)
-	return azblob.ServiceClient{}
-
+	return ctx, cred, blobContainer, accountName
 }
-
-func appendBlob(cred *azidentity.DefaultAzureCredential, accountName, blobContainer, deployment, k8sContainerName, data string, ctx context.Context) {
-	blobWithDir := deployment + "/" + time.Now().Format("20060102") + "-" + k8sContainerName + ".log"
-	data = data + "\n"
-	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
-	appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
+func uploadBlocks() {
+	ctx, cred, blobContainer, accountName := addContainer()
+	path := os.Getenv("LOG_PATH")
+	os.Chdir(path)
+	files, err := ioutil.ReadDir(path)
 	if err != nil {
-		log.Fatalf("Failed to create appendBlobClient %s\n", err)
+		log.Fatal(err)
 	}
+	for _, logfile := range files {
+		deploymentName := prepareBlobName(logfile.Name())
+		podName := logfile.Name()
 
-	_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
-	if err != nil {
-		log.Printf("Failed to append existing one %s", err)
-		_, err = appendBlobClient.Create(ctx, nil)
+		blobWithDir := deploymentName + "/" + podName
+		UNUSED(deploymentName, podName, blobWithDir)
+		log.Println(blobWithDir)
+		f, err := os.Open(podName)
 		if err != nil {
-			log.Printf("Failed to create new blob %s\n", err)
+			log.Errorf("No such a file  ", err)
 		}
-		_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+		u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
+		blockblobClient, err := azblob.NewBlockBlobClient(u, cred, nil)
 		if err != nil {
-			log.Fatalf("Failed to create a new Blob %s", err)
+			log.Fatal(err)
 		}
+		_, err = blockblobClient.UploadFile(ctx, f, azblob.UploadOption{})
+		if err != nil {
+			log.Fatalf("Failure to upload to blob: %+v", err)
+		}
+		log.Infof("===> %s uploaded successfully.", blobWithDir)
+
 	}
-
-	log.Printf("Block appended to %s successfully.\n", blobWithDir)
-
 }
 
 func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential) {
@@ -166,7 +211,7 @@ func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential
 	ctx := context.Background()
 	cred, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
-		log.Fatalf("Authentication Failed %s\n", err)
+		log.Fatalf("Authentication Failed %s", err)
 	}
 	return ctx, cred
 }
