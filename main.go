@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/streaming"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/kelseyhightower/envconfig"
@@ -59,15 +60,15 @@ func main() {
 
 	interval, err := strconv.Atoi(os.Getenv("INTERVAL"))
 	if err != nil {
-		panic(err)
-	}
-	if !(len(os.Getenv("INTERVAL")) > 0) {
+		log.Warnln("No custom interval %s set.", err)
 		interval = 900
+		log.Infof("Default %ds value set", interval)
 	}
 	t := time.Duration(interval)
 	http.HandleFunc("/log", headers)
 	ticker := time.NewTicker(t * time.Second)
 	go schedule(ticker)
+	log.Infoln("Collecting logs...")
 	http.ListenAndServe(":8090", nil)
 }
 
@@ -149,8 +150,6 @@ func writeBlob(data, deployment, podName string) (string, string, string) {
 	if _, err := f.WriteString(data + "\n"); err != nil {
 		log.Fatalf("Cannot write to the file %s", err)
 	}
-	log.Printf(" Collecting logs...It will be uploaded by %s secons interval", os.Getenv("INTERVAL"))
-
 	return deployment, podName, dir
 }
 
@@ -163,7 +162,6 @@ func addContainer() (context.Context, *azidentity.DefaultAzureCredential, string
 	if err != nil {
 		log.Printf("Invalid credentials with while creating a serviceClient error: %s" + err.Error())
 	}
-	log.Printf("Creating the container: %s", blobContainer)
 	containerClient, _ := serviceClient.NewContainerClient(blobContainer)
 	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
@@ -180,27 +178,41 @@ func uploadBlocks() {
 		log.Fatal(err)
 	}
 	for _, logfile := range files {
-		deploymentName := prepareBlobName(logfile.Name())
+		deploymentDir := prepareBlobName(logfile.Name())
 		podName := logfile.Name()
-
-		blobWithDir := deploymentName + "/" + podName
-		UNUSED(deploymentName, podName, blobWithDir)
-		log.Println(blobWithDir)
-		f, err := os.Open(podName)
+		blobWithDir := deploymentDir + "/" + podName
+		log.Debugf("Log file %s", podName)
+		log.Debugf("Blob full path %s", blobWithDir)
+		os.Chdir(deploymentDir)
+		b, err := os.ReadFile(podName)
 		if err != nil {
-			log.Errorf("No such a file  ", err)
+			fmt.Printf("No local blob file %s\n%s", err, blobWithDir)
 		}
+		data := string(b)
+		log.Debugf("Data be appended: %s", data)
 		u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
-		blockblobClient, err := azblob.NewBlockBlobClient(u, cred, nil)
+		appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("Failed to create appendBlobClient %s", err)
 		}
-		_, err = blockblobClient.UploadFile(ctx, f, azblob.UploadOption{})
+		_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
 		if err != nil {
-			log.Fatalf("Failure to upload to blob: %+v", err)
-		}
-		log.Infof("===> %s uploaded successfully.", blobWithDir)
+			_, err = appendBlobClient.Create(ctx, nil)
+			if err != nil {
+				log.Printf("Failed to create new blob %s", err)
+			}
+			_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+			if err != nil {
+				log.Fatalf("Failed to append the new Blob %s", err)
+			}
 
+		} else {
+			log.Printf("Successfully appended to existing blob %s", blobWithDir)
+		}
+	}
+	err = os.RemoveAll(os.Getenv("LOG_PATH"))
+	if err != nil {
+		log.Error(err)
 	}
 }
 
