@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,14 +20,19 @@ import (
 )
 
 type Credentials struct {
-	Client  string `envconfig:"AZURE_CLIENT_ID" required:"true"`
-	Secret  string `envconfig:"AZURE_CLIENT_SECRET" required:"true"`
-	Tenant  string `envconfig:"AZURE_TENANT_ID" required:"true"`
-	Subs    string `envconfig:"SUBSCRIPTION_ID" required:"true"`
-	Cluster string `envconfig:"CLUSTER_NAME" required:"true"`
-	Path    string `envconfig:"LOG_PATH" required:"true"`
+	Client         string `envconfig:"AZURE_CLIENT_ID" required:"true"`
+	Secret         string `envconfig:"AZURE_CLIENT_SECRET" required:"true"`
+	Tenant         string `envconfig:"AZURE_TENANT_ID" required:"true"`
+	Subs           string `envconfig:"SUBSCRIPTION_ID" required:"true"`
+	Cluster        string `envconfig:"CLUSTER_NAME" required:"true"`
+	Storageaccount string `envconfig:"STORAGE_ACCOUNT_NAME" required:"true"`
 }
 
+type EnvVars struct {
+	Path     string `envconfig:"LOG_PATH" default:"/tmp/logs"`
+	Interval int    `envconfig:"INTERVAL" default:"60"`
+	loglevel string `envconfig:"LOG_LEVEL" default:"INFO"`
+}
 type LogData struct {
 	Stream     string `json:"stream"`
 	Logtag     string `json:"logtag"`
@@ -56,19 +60,22 @@ type Annotations struct {
 	Parser string `json:"fluentbit.io/parser"`
 }
 
+var (
+	e EnvVars
+	c Credentials
+)
+
 func main() {
 
-	interval, err := strconv.Atoi(os.Getenv("INTERVAL"))
+	err := envconfig.Process("Interval", &e)
 	if err != nil {
-		log.Warnln("No custom interval %s set.", err)
-		interval = 900
-		log.Infof("Default %ds value set", interval)
+		log.Fatal(err.Error())
 	}
-	t := time.Duration(interval)
+	t := time.Duration(e.Interval)
 	http.HandleFunc("/log", headers)
 	ticker := time.NewTicker(t * time.Second)
 	go schedule(ticker)
-	log.Infoln("Collecting logs...")
+	log.Infof("Collecting logs under %s", e.Path)
 	http.ListenAndServe(":8090", nil)
 }
 
@@ -93,15 +100,13 @@ func prepareBlobName(s string) string {
 
 func headers(w http.ResponseWriter, r *http.Request) {
 
-	var (
-		c          []LogData
-		deployment string
-	)
+	var c []LogData
+
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println(err)
 	}
-	if os.Getenv("LOG_LEVEL") == "DEBUG" {
+	if e.loglevel == "DEBUG" {
 		log.SetLevel(log.DebugLevel)
 	} else {
 		log.SetLevel(log.InfoLevel)
@@ -110,7 +115,7 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	a := string(b)
 	json.Unmarshal([]byte(a), &c)
 	for i := range c {
-		deployment = removeHash(c[i].Kubernetes.Pod)
+		deployment := removeHash(c[i].Kubernetes.Pod)
 		log.Debugf("Deployment name: %s", deployment)
 		log.Debugf("Pod name       : %s", c[i].Kubernetes.Pod)
 		log.Debugf("Container name : %s", c[i].Kubernetes.Container)
@@ -127,10 +132,9 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func writeBlob(data, deployment, podName string) (string, string, string) {
+func writeBlob(data, deployment, pod string) (string, string, string) {
 	data = data + "\n"
-	var dir string
-	path := os.Getenv("LOG_PATH")
+	path := e.Path
 	err := os.MkdirAll(path, os.ModePerm)
 	if err != nil {
 		log.Println(err)
@@ -139,10 +143,9 @@ func writeBlob(data, deployment, podName string) (string, string, string) {
 	if err != nil {
 		log.Warningf("Could not change to the deployment path %s", err)
 	}
+	lfile := time.Now().Format("20060102") + "-" + pod + ".log"
 
-	dir = time.Now().Format("20060102") + "-" + podName + ".log"
-
-	f, err := os.OpenFile(dir, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(lfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Cannot open the file %s", err)
 	}
@@ -150,41 +153,40 @@ func writeBlob(data, deployment, podName string) (string, string, string) {
 	if _, err := f.WriteString(data + "\n"); err != nil {
 		log.Fatalf("Cannot write to the file %s", err)
 	}
-	return deployment, podName, dir
+	return deployment, pod, lfile
 }
 
 func addContainer() (context.Context, *azidentity.DefaultAzureCredential, string, string) {
-	ctx, cred := authServicePrincipal()
-	blobContainer := strings.ToLower(os.Getenv("CLUSTER_NAME"))
-	accountName := os.Getenv("STORAGE_ACCOUNT_NAME")
-	URL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
-	serviceClient, err := azblob.NewServiceClient(URL, cred, nil)
+	ctx, creds := authServicePrincipal()
+	blobContainer := strings.ToLower(c.Cluster)
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/", c.Storageaccount)
+	serviceClient, err := azblob.NewServiceClient(u, creds, nil)
 	if err != nil {
-		log.Printf("Invalid credentials with while creating a serviceClient error: %s" + err.Error())
+		log.Errorf("Invalid credentials while creating a serviceClient error: %s", err.Error())
 	}
 	containerClient, _ := serviceClient.NewContainerClient(blobContainer)
 	_, err = containerClient.Create(ctx, nil)
 	if err != nil {
 		log.Printf("Attempt to create container %s, but it exist. Skipping...", blobContainer)
 	}
-	return ctx, cred, blobContainer, accountName
+	return ctx, creds, blobContainer, c.Storageaccount
 }
 func uploadBlocks() {
 	ctx, cred, blobContainer, accountName := addContainer()
-	path := os.Getenv("LOG_PATH")
+	path := e.Path
 	os.Chdir(path)
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, logfile := range files {
-		deploymentDir := prepareBlobName(logfile.Name())
-		podName := logfile.Name()
-		blobWithDir := deploymentDir + "/" + podName
-		log.Debugf("Log file %s", podName)
+	for _, lgile := range files {
+		deploymentDir := prepareBlobName(lgile.Name())
+		pod := lgile.Name()
+		blobWithDir := deploymentDir + "/" + pod
+		log.Debugf("Log file %s", pod)
 		log.Debugf("Blob full path %s", blobWithDir)
 		os.Chdir(deploymentDir)
-		b, err := os.ReadFile(podName)
+		b, err := os.ReadFile(pod)
 		if err != nil {
 			fmt.Printf("No local blob file %s\n%s", err, blobWithDir)
 		}
@@ -210,7 +212,7 @@ func uploadBlocks() {
 			log.Printf("Successfully appended to existing blob %s", blobWithDir)
 		}
 	}
-	err = os.RemoveAll(os.Getenv("LOG_PATH"))
+	err = os.RemoveAll(e.Path)
 	if err != nil {
 		log.Error(err)
 	}
@@ -229,7 +231,7 @@ func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential
 }
 
 func authEnvVars() bool {
-	var c Credentials
+
 	err := envconfig.Process("Client", &c)
 	if err != nil {
 		log.Fatal(err.Error())
