@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -29,9 +30,10 @@ type Credentials struct {
 }
 
 type EnvVars struct {
-	Path     string `envconfig:"LOG_PATH" default:"/tmp/logs"`
-	Interval int    `envconfig:"INTERVAL" default:"60"`
-	loglevel string `envconfig:"LOG_LEVEL" default:"INFO"`
+	Path          string  `envconfig:"LOG_PATH" default:"/tmp/logs"`
+	Interval      int     `envconfig:"INTERVAL" default:"600"`
+	FileSizeLimit float64 `envconfig:"FILE_SIZE_LIMIT" default:"3"`
+	loglevel      string  `envconfig:"LOG_LEVEL" default:"INFO"`
 }
 type LogData struct {
 	Stream     string `json:"stream"`
@@ -57,7 +59,8 @@ type Labels struct {
 }
 
 type Annotations struct {
-	Parser string `json:"fluentbit.io/parser"`
+	Parser    string `json:"fluentbit.io/parser"`
+	SizeCheck bool
 }
 
 var (
@@ -82,7 +85,7 @@ func main() {
 func schedule(ticker *time.Ticker) {
 	for {
 		<-ticker.C
-		uploadBlocks()
+		uploadByInterval()
 	}
 }
 
@@ -116,10 +119,11 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(a), &c)
 	for i := range c {
 		deployment := removeHash(c[i].Kubernetes.Pod)
-		log.Debugf("Deployment name: %s", deployment)
+		log.Debugf("Deployment name: %s\nPod name: ", deployment)
 		log.Debugf("Pod name       : %s", c[i].Kubernetes.Pod)
 		log.Debugf("Container name : %s", c[i].Kubernetes.Container)
 		log.Debugf("The log message: %s", c[i].Message)
+		log.Debugf("The log message: %s", c[i].Kubernetes.Annotations.SizeCheck)
 		if strings.Contains(deployment, "backup") || strings.Contains(deployment, "setup") {
 			break
 		}
@@ -127,19 +131,18 @@ func headers(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		writeBlob(c[i].Message, deployment, c[i].Kubernetes.Pod)
+		writeBlob(c[i].Message, deployment, c[i].Kubernetes.Pod, c[i].Kubernetes.Annotations.SizeCheck)
 	}
 
 }
 
-func writeBlob(data, deployment, pod string) (string, string, string) {
+func writeBlob(data, deployment, pod string, sizecheck bool) (string, string, string) {
 	data = data + "\n"
-	path := e.Path
-	err := os.MkdirAll(path, os.ModePerm)
+	err := os.MkdirAll(e.Path, os.ModePerm)
 	if err != nil {
 		log.Println(err)
 	}
-	err = os.Chdir(path)
+	err = os.Chdir(e.Path)
 	if err != nil {
 		log.Warningf("Could not change to the deployment path %s", err)
 	}
@@ -153,7 +156,27 @@ func writeBlob(data, deployment, pod string) (string, string, string) {
 	if _, err := f.WriteString(data + "\n"); err != nil {
 		log.Fatalf("Cannot write to the file %s", err)
 	}
+	fileSize := calculateSize(lfile)
+	if fileSize >= e.FileSizeLimit {
+		uploadBySize(lfile)
+	}
 	return deployment, pod, lfile
+}
+func calculateSize(path string) float64 {
+	os.Chdir(e.Path)
+	file, err := os.Open(path)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		panic(err)
+	}
+	bytes := stat.Size()
+	kilobytes := (bytes / 1024)
+	megabytes := (float64)(kilobytes / 1024)
+	return megabytes
 }
 
 func addContainer() (context.Context, *azidentity.DefaultAzureCredential, string, string) {
@@ -171,53 +194,89 @@ func addContainer() (context.Context, *azidentity.DefaultAzureCredential, string
 	}
 	return ctx, creds, blobContainer, c.Storageaccount
 }
-func uploadBlocks() {
+
+func uploadBySize(logfile string) {
+	for _, lfile := range getLogFiles() {
+		deploymentDir := prepareBlobName(lfile.Name())
+		blobWithDir := deploymentDir + "/" + lfile.Name()
+		os.Chdir(deploymentDir)
+		b, err := os.ReadFile(lfile.Name())
+		if err != nil {
+			fmt.Printf("No local blob file %s\n%s", err, blobWithDir)
+		}
+		data := string(b)
+		if lfile.Name() == logfile {
+			uploadBlob(data, blobWithDir)
+			err = os.Remove(logfile)
+			if err != nil {
+				log.Error(err)
+			}
+			break
+		}
+		log.Debugf("Data be appended: %s", data)
+	}
+
+	log.Println("The upload triggered by file size")
+
+}
+
+func uploadByInterval() {
+
+	for _, lfile := range getLogFiles() {
+		deploymentDir := prepareBlobName(lfile.Name())
+		blobWithDir := deploymentDir + "/" + lfile.Name()
+		os.Chdir(deploymentDir)
+		b, err := os.ReadFile(lfile.Name())
+		if err != nil {
+			fmt.Printf("No local blob file %s\n%s", err, blobWithDir)
+		}
+		data := string(b)
+		uploadBlob(data, blobWithDir)
+		log.Debugf("Data be appended: %s", data)
+	}
+	err := os.RemoveAll(e.Path)
+	if err != nil {
+		log.Error(err)
+	}
+
+	log.Println("The upload triggered by file interval")
+}
+
+func uploadBlob(data, blobWithDir string) {
 	ctx, cred, blobContainer, accountName := addContainer()
+	path := e.Path
+	os.Chdir(path)
+	u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
+	appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
+	if err != nil {
+		log.Fatalf("Failed to create appendBlobClient %s", err)
+	}
+	_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+	if err != nil {
+		_, err = appendBlobClient.Create(ctx, nil)
+		if err != nil {
+			log.Printf("Failed to create new blob %s", err)
+		}
+		_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
+		if err != nil {
+			log.Fatalf("Failed to append the new Blob %s", err)
+		}
+
+	} else {
+		log.Printf("Successfully appended to existing blob %s", blobWithDir)
+	}
+
+}
+
+func getLogFiles() []fs.FileInfo {
 	path := e.Path
 	os.Chdir(path)
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, lgile := range files {
-		deploymentDir := prepareBlobName(lgile.Name())
-		pod := lgile.Name()
-		blobWithDir := deploymentDir + "/" + pod
-		log.Debugf("Log file %s", pod)
-		log.Debugf("Blob full path %s", blobWithDir)
-		os.Chdir(deploymentDir)
-		b, err := os.ReadFile(pod)
-		if err != nil {
-			fmt.Printf("No local blob file %s\n%s", err, blobWithDir)
-		}
-		data := string(b)
-		log.Debugf("Data be appended: %s", data)
-		u := fmt.Sprintf("https://%s.blob.core.windows.net/%s/%s", accountName, blobContainer, blobWithDir)
-		appendBlobClient, err := azblob.NewAppendBlobClient(u, cred, nil)
-		if err != nil {
-			log.Fatalf("Failed to create appendBlobClient %s", err)
-		}
-		_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
-		if err != nil {
-			_, err = appendBlobClient.Create(ctx, nil)
-			if err != nil {
-				log.Printf("Failed to create new blob %s", err)
-			}
-			_, err = appendBlobClient.AppendBlock(ctx, streaming.NopCloser(strings.NewReader(data)), nil)
-			if err != nil {
-				log.Fatalf("Failed to append the new Blob %s", err)
-			}
-
-		} else {
-			log.Printf("Successfully appended to existing blob %s", blobWithDir)
-		}
-	}
-	err = os.RemoveAll(e.Path)
-	if err != nil {
-		log.Error(err)
-	}
+	return files
 }
-
 func authServicePrincipal() (context.Context, *azidentity.DefaultAzureCredential) {
 	if !authEnvVars() {
 		log.Fatalln("Error: Authentication environment variables not found")
