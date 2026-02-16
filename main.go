@@ -138,7 +138,7 @@ func headers(w http.ResponseWriter, r *http.Request) {
 		log.Debugf("Pod name       : %s", logItems[i].Kubernetes.Pod)
 		log.Debugf("Container name : %s", logItems[i].Kubernetes.Container)
 		log.Debugf("The log message: %s", logItems[i].Message)
-		log.Debugf("The log message: %s", logItems[i].Kubernetes.Annotations.SizeCheck)
+		log.Debugf("Size check     : %v", logItems[i].Kubernetes.Annotations.SizeCheck)
 		if strings.Contains(deployment, "backup") || strings.Contains(deployment, "setup") {
 			break
 		}
