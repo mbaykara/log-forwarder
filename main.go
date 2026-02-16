@@ -69,6 +69,11 @@ var (
 	c Credentials
 )
 
+const (
+	maxRequestBodySize = 10 * 1024 * 1024 // 10MB
+	bytesPerMB         = 1024 * 1024
+)
+
 func main() {
 
 	err := envconfig.Process("Interval", &e)
@@ -107,7 +112,7 @@ func headers(w http.ResponseWriter, r *http.Request) {
 	var logItems []LogData
 
 	// Limit request body size to 10MB to prevent memory exhaustion
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
 	b, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -190,7 +195,7 @@ func calculateSize(path string) float64 {
 		return 0
 	}
 	bytes := stat.Size()
-	megabytes := float64(bytes) / (1024 * 1024)
+	megabytes := float64(bytes) / bytesPerMB
 	return megabytes
 }
 
