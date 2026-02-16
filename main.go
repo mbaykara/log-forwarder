@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -145,7 +146,9 @@ func headers(w http.ResponseWriter, r *http.Request) {
 
 	// Send success response
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	if _, err := w.Write([]byte("OK")); err != nil {
+		log.Errorf("Failed to write HTTP response: %v", err)
+	}
 }
 
 func writeBlob(data, deployment, pod string, sizecheck bool) (string, string, string) {
@@ -156,7 +159,7 @@ func writeBlob(data, deployment, pod string, sizecheck bool) (string, string, st
 	}
 
 	lfile := time.Now().Format("20060102") + "-" + pod + ".log"
-	fullPath := e.Path + "/" + lfile
+	fullPath := filepath.Join(e.Path, lfile)
 
 	f, err := os.OpenFile(fullPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -210,7 +213,7 @@ func uploadBySize(logfile string) {
 	for _, lfile := range getLogFiles() {
 		deploymentDir := prepareBlobName(lfile.Name())
 		blobWithDir := deploymentDir + "/" + lfile.Name()
-		fullPath := e.Path + "/" + lfile.Name()
+		fullPath := filepath.Join(e.Path, lfile.Name())
 		b, err := os.ReadFile(fullPath)
 		if err != nil {
 			log.Errorf("No local blob file %s: %v", blobWithDir, err)
@@ -237,7 +240,7 @@ func uploadByInterval() {
 	for _, lfile := range getLogFiles() {
 		deploymentDir := prepareBlobName(lfile.Name())
 		blobWithDir := deploymentDir + "/" + lfile.Name()
-		fullPath := e.Path + "/" + lfile.Name()
+		fullPath := filepath.Join(e.Path, lfile.Name())
 		b, err := os.ReadFile(fullPath)
 		if err != nil {
 			log.Errorf("No local blob file %s: %v", blobWithDir, err)
